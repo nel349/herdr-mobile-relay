@@ -173,6 +173,7 @@ var actionCatalog = map[string]ActionMetadata{
 	"workspace_close":            mutateAction("workspace_close", true, true),
 	"workspace_create":           mutateAction("workspace_create", true, true),
 	"workspace_file":             readAction("workspace_file"),
+	"attachment_file":            readAction("attachment_file"),
 	"workspace_git_diff":         readAction("workspace_git_diff"),
 	"workspace_git_status":       readAction("workspace_git_status"),
 	"workspace_rename":           mutateAction("workspace_rename", true, true),

@@ -302,6 +302,30 @@ func TestUploadAttachmentBatch(t *testing.T) {
 	if len(operation) < 4 || !strings.Contains(operation[3], "/uploads/objects/") || operation[3] == "Review this file:\nAttachment: "+ref {
 		t.Fatalf("attachment prompt did not resolve an opaque reference: %v", operation)
 	}
+
+	// The phone reads the picture back to show it in the message it sent.
+	read := map[string]any{"type": "attachment_file", "protocol": 3, "request_id": "attachment-read", "pane_id": "pane-1", "ref": ref}
+	data, _ = json.Marshal(read)
+	if err := conn.Write(ctx, websocket.MessageText, data); err != nil {
+		t.Fatalf("write attachment read: %v", err)
+	}
+	readResult := readJSON(t, conn, ctx, 5*time.Second)
+	file, _ := readResult["data"].(map[string]any)
+	if readResult["type"] != "command_result" || readResult["ok"] != true ||
+		file["kind"] != "image" || file["data_url"] != "data:image/png;base64,"+base64.StdEncoding.EncodeToString(png) {
+		t.Fatalf("attachment read = %v", readResult)
+	}
+	if path, _ := file["path"].(string); strings.Contains(path, "/") {
+		t.Fatalf("attachment read leaked its host path: %v", path)
+	}
+	unknown := map[string]any{"type": "attachment_file", "protocol": 3, "request_id": "attachment-unknown", "pane_id": "pane-1", "ref": strings.Repeat("A", 32)}
+	data, _ = json.Marshal(unknown)
+	if err := conn.Write(ctx, websocket.MessageText, data); err != nil {
+		t.Fatalf("write unknown read: %v", err)
+	}
+	if refused := readJSON(t, conn, ctx, 5*time.Second); refused["ok"] != false {
+		t.Fatalf("an unknown attachment was answered: %v", refused)
+	}
 }
 
 func TestUploadAttachmentRejectsBadMime(t *testing.T) {

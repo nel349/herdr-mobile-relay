@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"github.com/0cv/herdr-mobile-relay/internal/protocol"
 	"github.com/0cv/herdr-mobile-relay/internal/transport"
 	"github.com/0cv/herdr-mobile-relay/internal/upload"
+	"github.com/0cv/herdr-mobile-relay/internal/workspace"
 	"strings"
 )
 
@@ -51,6 +53,35 @@ func (s *Server) expandPromptAttachmentReferences(action string, message map[str
 		message[field] = strings.Join(lines, "\n")
 	}
 	return nil
+}
+
+// A picture read back for the phone is held to the same limit as a picture
+// previewed from the session's folder.
+const attachmentPreviewBytes = 5 * 1024 * 1024
+
+// readAttachment answers a picture sent from the phone back to it, for the
+// session it was sent to, so the message that carried it can show it. The
+// answer has the shape of a workspace file and never names the host path.
+func (s *Server) readAttachment(client *transport.ClientConn, requestID, paneID string, message map[string]any) {
+	ref, _ := message["ref"].(string)
+	agent, exists := s.state.Agent(paneID)
+	if paneID == "" || !exists || s.uploadM == nil || !validAttachmentReference(ref) {
+		s.sendCommandResult(client, requestID, "attachment_file", false, "failed", "Attachment not found", paneID, nil)
+		return
+	}
+	target := protocol.TargetRef{
+		ServerSessionID: "primary", PaneID: paneID, TerminalID: agent.TerminalID,
+		Generation: agent.Generation, AgentSessionID: agent.SessionID,
+	}
+	attachment, data, err := s.uploadM.ReadImage(target, ref, attachmentPreviewBytes)
+	if err != nil {
+		s.sendCommandResult(client, requestID, "attachment_file", false, "failed", "Attachment could not be read", paneID, nil)
+		return
+	}
+	s.sendCommandResult(client, requestID, "attachment_file", true, "completed", "", paneID, workspace.File{
+		Path: attachment.Name, MediaType: attachment.MediaType, Kind: "image", Size: attachment.Bytes,
+		DataURL: "data:" + attachment.MediaType + ";base64," + base64.StdEncoding.EncodeToString(data),
+	})
 }
 
 func validAttachmentReference(value string) bool {

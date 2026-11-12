@@ -629,6 +629,46 @@ func (m *Manager) Resolve(target protocol.TargetRef, ref string) (Attachment, er
 	return record.attachment, nil
 }
 
+// ReadImage answers a picture sent for a session back to that session, so the
+// phone can show it in the message that carried it. Only a picture is
+// answered, only within limit, and only while its bytes are still the ones
+// that were uploaded.
+func (m *Manager) ReadImage(target protocol.TargetRef, ref string, limit int64) (Attachment, []byte, error) {
+	m.Cleanup()
+	m.attachmentMu.Lock()
+	defer m.attachmentMu.Unlock()
+	m.mu.Lock()
+	record, ok := m.attachments[ref]
+	m.mu.Unlock()
+	if !ok {
+		return Attachment{}, nil, failure("attachment_not_found", nil)
+	}
+	if !attachmentTargetMatches(record, target) {
+		return Attachment{}, nil, failure("attachment_scope_mismatch", nil)
+	}
+	attachment := record.attachment
+	if !strings.HasPrefix(attachment.MediaType, "image/") || attachment.MediaType == "image/svg+xml" {
+		return Attachment{}, nil, failure("attachment_not_image", nil)
+	}
+	if attachment.Bytes > limit {
+		return Attachment{}, nil, failure("attachment_too_large", nil)
+	}
+	file, _, err := m.openAttachmentLocked(record)
+	if err != nil {
+		return Attachment{}, nil, err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, limit+1))
+	if err != nil || int64(len(data)) != attachment.Bytes {
+		return Attachment{}, nil, failure("attachment_changed", nil)
+	}
+	sum := sha256.Sum256(data)
+	if subtle.ConstantTimeCompare([]byte(hex.EncodeToString(sum[:])), []byte(attachment.SHA256)) != 1 {
+		return Attachment{}, nil, failure("attachment_changed", nil)
+	}
+	return attachment, data, nil
+}
+
 func (m *Manager) Cleanup() int {
 	now := m.now()
 	m.mu.Lock()

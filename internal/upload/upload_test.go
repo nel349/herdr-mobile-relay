@@ -674,3 +674,56 @@ func TestStartupRemovesNonResumableSessionsAndPrunesLegacyUploads(t *testing.T) 
 		t.Fatalf("legacy upload still exists: %v", err)
 	}
 }
+
+// A picture sent from the phone is read back for the same session only, only
+// while it is the picture that was uploaded, and never a file that is not one.
+func TestReadImageAnswersThePictureToItsSessionOnly(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	manager := newTestManager(t, &now)
+	target := uploadTarget(4)
+	png := append([]byte("\x89PNG\r\n\x1a\n"), []byte("bounded image")...)
+	markdown := []byte("# notes\n")
+	begin, err := manager.Begin(BeginRequest{Target: target, Files: []FileSpec{
+		{Name: "photo.png", MediaType: "image/png", Bytes: int64(len(png))},
+		{Name: "notes.md", MediaType: "text/markdown", Bytes: int64(len(markdown))},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sendChunk(t, manager, target, begin.UploadID, 0, 0, png)
+	sendChunk(t, manager, target, begin.UploadID, 1, 1, markdown)
+	finished, err := manager.Finish(FinishRequest{Target: target, UploadID: begin.UploadID, Files: []FileDigest{
+		{FileIndex: 0, SHA256: digestFor(png)}, {FileIndex: 1, SHA256: digestFor(markdown)},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	picture, notes := finished.Attachments[0], finished.Attachments[1]
+
+	attachment, data, err := manager.ReadImage(target, picture.Ref, 1024)
+	if err != nil || !bytes.Equal(data, png) || attachment.MediaType != "image/png" {
+		t.Fatalf("read = %#v, %q, %v", attachment, data, err)
+	}
+	other := target
+	other.PaneID = "another-pane"
+	if _, _, err := manager.ReadImage(other, picture.Ref, 1024); errorCode(t, err) != "attachment_scope_mismatch" {
+		t.Fatalf("another session read the picture: %v", err)
+	}
+	if _, _, err := manager.ReadImage(target, notes.Ref, 1024); errorCode(t, err) != "attachment_not_image" {
+		t.Fatalf("a file that is not a picture was answered: %v", err)
+	}
+	if _, _, err := manager.ReadImage(target, picture.Ref, 4); errorCode(t, err) != "attachment_too_large" {
+		t.Fatalf("a picture over the limit was answered: %v", err)
+	}
+	if _, _, err := manager.ReadImage(target, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", 1024); errorCode(t, err) != "attachment_not_found" {
+		t.Fatalf("an unknown reference was answered: %v", err)
+	}
+	// Same size, other bytes: no longer the picture that was sent.
+	changed := bytes.Repeat([]byte{'x'}, len(png))
+	if err := os.WriteFile(picture.Path, changed, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := manager.ReadImage(target, picture.Ref, 1024); errorCode(t, err) != "attachment_changed" {
+		t.Fatalf("a changed picture was answered: %v", err)
+	}
+}

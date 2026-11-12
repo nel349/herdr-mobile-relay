@@ -1099,6 +1099,8 @@ func (s *Server) Run(ctx context.Context) error {
 				break
 			}
 			s.sendCommandResult(client, requestID, inbound.Type, true, "completed", "", paneID, data)
+		case "attachment_file":
+			s.readAttachment(client, inbound.RequestID, inbound.PaneID, msg)
 		case "copy_agent_response":
 			requestID, _ := msg["request_id"].(string)
 			paneID, _ := msg["pane_id"].(string)

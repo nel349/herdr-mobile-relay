@@ -123,7 +123,7 @@ func TestAuditedWriteSetCoversRemoteAgentMutations(t *testing.T) {
 			t.Fatalf("%s is not audited", action)
 		}
 	}
-	for _, action := range []string{"workspace_file", "worktree_list", "get_activity", "refresh_agents"} {
+	for _, action := range []string{"workspace_file", "attachment_file", "worktree_list", "get_activity", "refresh_agents"} {
 		if isAuditedWrite(action) {
 			t.Fatalf("read-only action %s is marked as an audited write", action)
 		}
