@@ -552,3 +552,75 @@ func TestClaudeConversationHidesHarnessGeneratedUserRows(t *testing.T) {
 		t.Fatalf("visible turns = %q, want %q", got, want)
 	}
 }
+
+// A message typed while Claude works is recorded only as an attachment of the
+// turn it joined. It is the person's message and is shown as theirs; queued
+// commands that no person typed stay hidden. Shapes copied from a real
+// Claude Code transcript.
+func TestClaudeConversationShowsMessagesTypedWhileClaudeWorks(t *testing.T) {
+	reader, home := testReader(t)
+	path := filepath.Join(home, ".claude", "projects", "-work", testSessionID+".jsonl")
+	queued := func(prompt, kind, mode string) map[string]any {
+		return map[string]any{
+			"type": "attachment", "timestamp": "2026-11-09T03:59:37.846Z", "isSidechain": false,
+			"attachment": map[string]any{
+				"type": "queued_command", "prompt": prompt, "commandMode": mode,
+				"origin": map[string]any{"kind": kind}, "humanTurn": true,
+			},
+		}
+	}
+	writeRows(t, path,
+		map[string]any{
+			"type": "user", "timestamp": "2026-11-09T03:59:30Z",
+			"message": map[string]any{"content": "install it on the phone"},
+		},
+		queued("so you can debug", "human", "prompt"),
+		queued("<task-notification>done</task-notification>", "task", "prompt"),
+		queued("/compact", "human", "command"),
+		map[string]any{"type": "attachment", "timestamp": "2026-11-09T03:59:39Z", "attachment": map[string]any{"type": "hook_success"}},
+	)
+
+	page, err := reader.Read("claude", testSessionID, "", 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Entries) != 2 {
+		t.Fatalf("entries = %#v, want the prompt and the message typed while Claude worked", page.Entries)
+	}
+	if page.Entries[1].Role != "user" || page.Entries[1].Text != "so you can debug" {
+		t.Fatalf("second entry = %#v, want the person's message typed mid-turn", page.Entries[1])
+	}
+}
+
+// A message sent from a phone reaches Claude Code as a paste, and is recorded
+// wrapped in pasted_content tags. The person's words are shown, unwrapped, so
+// the phone can tell its own message from a second one. Shapes copied from a
+// real Claude Code transcript.
+func TestClaudeConversationUnwrapsPastedMessages(t *testing.T) {
+	reader, home := testReader(t)
+	path := filepath.Join(home, ".claude", "projects", "-work", testSessionID+".jsonl")
+	writeRows(t, path,
+		map[string]any{
+			"type": "user", "timestamp": "2026-11-09T07:37:34.972Z",
+			"message": map[string]any{"content": "\n\n<pasted_content id=\"8128\">\nok. the draft has too much info\nlet's trim it\n</pasted_content id=\"8128\">\n"},
+		},
+		map[string]any{
+			"type": "user", "timestamp": "2026-11-09T07:38:00Z",
+			"message": map[string]any{"content": "proofread:\n\n\n<pasted_content id=\"8129\">\nHey, I'm on board.\n</pasted_content id=\"8129\">\n"},
+		},
+	)
+
+	page, err := reader.Read("claude", testSessionID, "", 80)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Entries) != 2 {
+		t.Fatalf("entries = %#v, want both messages", page.Entries)
+	}
+	if got := page.Entries[0].Text; got != "ok. the draft has too much info\nlet's trim it" {
+		t.Fatalf("first message = %q, want the pasted words alone", got)
+	}
+	if got := page.Entries[1].Text; got != "proofread:\n\n\nHey, I'm on board." {
+		t.Fatalf("second message = %q, want the words around the paste kept", got)
+	}
+}

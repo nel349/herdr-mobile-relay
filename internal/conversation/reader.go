@@ -919,6 +919,9 @@ func textValue(value any) string {
 
 func parseClaudeRecord(record map[string]any) (string, string) {
 	role := stringValue(record["type"])
+	if role == "attachment" && record["isSidechain"] != true {
+		return parseClaudeQueuedPrompt(record)
+	}
 	if (role != "user" && role != "assistant") || record["isSidechain"] == true {
 		return "", ""
 	}
@@ -956,6 +959,31 @@ func parseClaudeRecord(record map[string]any) (string, string) {
 	return role, textBlocks(content)
 }
 
+// parseClaudeQueuedPrompt returns a message the person typed while Claude was
+// working. Claude Code records such a message only as an attachment of the turn
+// it joined ("queued_command", absorbed mid-turn), never as a user row, so it is
+// the only record of what the person said. Only prompts a person typed count:
+// queued commands from anywhere else, such as tasks finishing, stay hidden.
+func parseClaudeQueuedPrompt(record map[string]any) (string, string) {
+	attachment, ok := record["attachment"].(map[string]any)
+	if !ok || stringValue(attachment["type"]) != "queued_command" || stringValue(attachment["commandMode"]) != "prompt" {
+		return "", ""
+	}
+	origin, ok := attachment["origin"].(map[string]any)
+	if !ok || stringValue(origin["kind"]) != "human" {
+		return "", ""
+	}
+	prompt, ok := attachment["prompt"].(string)
+	if !ok {
+		return "", ""
+	}
+	text := humanClaudeText(prompt)
+	if strings.TrimSpace(text) == "" {
+		return "", ""
+	}
+	return "user", text
+}
+
 var (
 	bashOutputRow     = regexp.MustCompile(`(?s)^<bash-stdout>.*</bash-stdout><bash-stderr>.*</bash-stderr>$`)
 	bashOutputElement = regexp.MustCompile(`(?s)<bash-stdout>.*?</bash-stdout>|<bash-stderr>.*?</bash-stderr>`)
@@ -963,7 +991,15 @@ var (
 
 var commandTags = regexp.MustCompile(`(?s)<command-(?:message|name|args)>.*?</command-(?:message|name|args)>`)
 
+// pastedContent is text Claude Code received as a paste, as a message sent from
+// a phone into the terminal always is: the person's own words, wrapped as
+// <pasted_content id="N">\n...\n</pasted_content id="N">. Shown unwrapped.
+var pastedContent = regexp.MustCompile(`(?s)<pasted_content id="[^"]*">\n?(.*?)\n?</pasted_content(?: id="[^"]*")?>`)
+
 func humanClaudeText(raw string) string {
+	if strings.Contains(raw, "<pasted_content id=") {
+		raw = strings.TrimSpace(pastedContent.ReplaceAllString(raw, "$1"))
+	}
 	trimmed := strings.TrimSpace(raw)
 	for _, envelope := range []string{"<system-reminder>", "<local-command-caveat>", "<task-notification>", "<local-command-stdout>"} {
 		if strings.HasPrefix(trimmed, envelope) {
