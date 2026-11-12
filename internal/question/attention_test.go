@@ -1459,3 +1459,30 @@ func TestApprovalFingerprintBindsPromptCommandAndOrderedOptions(t *testing.T) {
 		t.Fatalf("precomputed fingerprint = %q", got)
 	}
 }
+
+// Claude Code's "Read file" dialog, captured twice from a live pane four
+// seconds apart. The only difference is the blinking "⏺" on the tool line
+// above the dialog. The approval must read as the read, not as the user's
+// message above it, and the blink must not change the fingerprint, or the
+// answer is refused as stale.
+func TestClaudeReadFileApprovalIsTheReadAndStaysTheSame(t *testing.T) {
+	on := Classify(attentionFixture(t, "claude-read-file-approval-blink-on.ansi"), "claude")
+	off := Classify(attentionFixture(t, "claude-read-file-approval-blink-off.ansi"), "claude")
+	for _, got := range []Classification{on, off} {
+		if got.Kind != AttentionApproval {
+			t.Fatalf("kind = %v, want approval: %+v", got.Kind, got)
+		}
+		// The file read sits between the dialog's dashed rules, where the app looks
+		// for what an approval would do.
+		read := "╌ Read(/Users/person/.cache/herdr-mobile-relay/uploads/objects/ZKxnoDfUsih-UKhIF52hqsDNenzEwOKk.png) ╌"
+		if !strings.Contains(got.Prompt, read) || strings.Contains(got.Prompt, "Whistle test") {
+			t.Fatalf("prompt = %q, want the Read file dialog without the user's message", got.Prompt)
+		}
+		if got.Command != "Read file" {
+			t.Fatalf("command = %q, want the dialog's title", got.Command)
+		}
+	}
+	if ApprovalFingerprint(on) != ApprovalFingerprint(off) {
+		t.Fatalf("blink changed the fingerprint:\non: %q\noff: %q", stableApprovalSource(on.approvalSource), stableApprovalSource(off.approvalSource))
+	}
+}

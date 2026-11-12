@@ -141,6 +141,11 @@ func Classify(text, agent string) Classification {
 		}
 		if options, focus, command := liveApprovalDetails(text, agent); len(options) > 0 {
 			summaryLines := approvalSummaryLines(text, agent)
+			if command == "" && strings.Contains(strings.ToLower(agent), "claude") {
+				if dialog := claudeDialogLines(text); dialog != nil {
+					command = claudeDialogCommand(dialog)
+				}
+			}
 			if command == "" {
 				command = approvalCommand(summaryLines)
 			}
@@ -172,6 +177,11 @@ func Classify(text, agent string) Classification {
 
 func approvalSummaryLines(text, agent string) []string {
 	normalized := strings.ToLower(agent)
+	if strings.Contains(normalized, "claude") {
+		if dialog := claudeDialogLines(text); dialog != nil {
+			return claudeSummaryLines(dialog)
+		}
+	}
 	isHermes := strings.Contains(normalized, "hermes")
 	isAgy := isAgyAgent(normalized)
 	if !isHermes && !isAgy {
@@ -201,6 +211,80 @@ func approvalSummaryLines(text, agent string) []string {
 		filtered = filtered[len(filtered)-12:]
 	}
 	return filtered
+}
+
+// Claude Code opens a permission dialog with a full-width rule and draws its
+// title, what it will do, the question and the choices under that rule. Above
+// it is the conversation: the user's own message, whose "❯" reads as a
+// command, and the tool line, whose "⏺" blinks. Reading past the rule takes
+// the message for the request, and the blink changes the fingerprint between
+// asking and answering, so the answer is refused as stale.
+func claudeDialogLines(text string) []string {
+	rawLines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	menuLines := make([]string, len(rawLines))
+	for index, line := range rawLines {
+		menuLines[index] = cleanCodexLine(line)
+	}
+	rows := latestApprovalMenu(menuLines)
+	if len(rows) < 2 {
+		return nil
+	}
+	floor := latestCompletedTurnLine(cleanLines(text))
+	for index := rows[0].line - 1; index > floor; index-- {
+		if terminalRulePattern.MatchString(strings.TrimSpace(menuLines[index])) {
+			return menuLines[index+1 : rows[len(rows)-1].line+1]
+		}
+	}
+	return nil
+}
+
+// The dashed rules between a dialog's parts mark where what it would do starts
+// and ends, which the app reads, so each is kept, but as a short run: at full
+// width two of them fill most of the summary. The focus marker on a choice is
+// presentation, left out so moving the cursor leaves the summary the same.
+var claudeDashedRulePattern = regexp.MustCompile(`^[╌┄┈]+$`)
+
+const claudeShortRule = "╌╌╌"
+
+// What a Claude dialog asks, in its own words: its question when that names
+// the thing ("Do you want to create notes.md?"), otherwise its title ("Read
+// file", "Bash command"), since "Do you want to proceed?" says nothing.
+func claudeDialogCommand(dialog []string) string {
+	title := ""
+	for _, line := range dialog {
+		line = strings.TrimSpace(line)
+		if line == "" || claudeDashedRulePattern.MatchString(line) {
+			continue
+		}
+		if title == "" {
+			title = line
+		}
+		if strings.HasPrefix(strings.ToLower(line), "do you want to") && !promptSkipPattern.MatchString(line) {
+			return line
+		}
+	}
+	return title
+}
+
+func claudeSummaryLines(dialog []string) []string {
+	lines := make([]string, 0, len(dialog))
+	for _, line := range dialog {
+		line = strings.TrimSpace(line)
+		if line == "" || chromePattern.MatchString(line) || promptSkipPattern.MatchString(line) {
+			continue
+		}
+		if claudeDashedRulePattern.MatchString(line) {
+			line = claudeShortRule
+		}
+		if match := menuPattern.FindStringSubmatch(line); match != nil {
+			line = match[2] + ". " + compact(match[3], 500)
+		}
+		lines = append(lines, line)
+	}
+	if len(lines) > 12 {
+		lines = lines[len(lines)-12:]
+	}
+	return lines
 }
 
 func hermesApprovalChromeLine(line string) bool {
@@ -325,6 +409,11 @@ func approvalDialogSource(text, agent string) string {
 			}
 		}
 		return ""
+	}
+	if strings.Contains(normalized, "claude") {
+		if dialog := claudeDialogLines(text); dialog != nil {
+			return strings.Join(dialog, "\n")
+		}
 	}
 	rawLines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
 	menuLines := make([]string, len(rawLines))
